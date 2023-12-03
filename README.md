@@ -6,4 +6,4 @@ Repository for the final project, a project published in partial fulfillment of 
 
 02. Codes: stores all R code of this project
 
-03. . Report: stores a final pdf report of this project
+03. Report: stores a final pdf report of this project
