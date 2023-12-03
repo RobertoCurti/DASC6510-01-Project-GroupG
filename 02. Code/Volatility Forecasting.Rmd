@@ -62,7 +62,7 @@ names(BVSP) <- "Price"
 BVSP$Return <- CalculateReturns(BVSP[, "Price"])
 BVSP <- na.omit(BVSP)
 
-# Create date variable
+# Create date variable and convert xts to tsibble format
 zoo::fortify.zoo(BVSP) %>%
   mutate(t.day = row_number()) %>%
   as_tsibble(index = t.day) -> BVSP
@@ -73,16 +73,12 @@ BVSP %>%
 
 BVSP %>%
   filter(Index > as.Date('2022-10-31')) -> BVSP.test
-
-# Plot of daily price
-plot(BVSP.train$Index, BVSP.train$Price, xlab="Date", ylab="Adjusted Closing Prices", main="BVSP", col="blue", type='l') 
-lines(BVSP.test$Index, BVSP.test$Price, col="red", type='l')
 ```
 
 
 
 ``` {r, message = FALSE, warning = FALSE}
-# Functions
+# Calculate sign correlation and degree of freedom of return
 ## Sign Correlation Function 
 rho.cal<-function(X){
   rho.hat<-cor(sign(X-mean(X)), X-mean(X))
@@ -94,9 +90,8 @@ df=0
 fun <- function(x, rhoValue){
   return(rhoValue*(x-1)*beta(x/2,1/2)-2*sqrt(x-2))
 }
-```
 
-``` {r, message = FALSE, warning = FALSE}
+
 # Calculate sign correlation
 rho_cal <- rho.cal(na.omit(BVSP$Return))
 
@@ -106,6 +101,7 @@ dof <- uniroot(fun, c(3, 8), rho_cal)$root
 # Print results
 cat("Symbol:", symbol, "\nDegrees of Freedom:", dof, "\nSign Correlation:", rho_cal, "\n\n")
 ```
+
 
 
 ## Volatility Forecasting
@@ -126,12 +122,14 @@ acf(BVSP.returns)
 pacf(BVSP.returns)
 ```
 ```{r}
+# Fit auto.arima function to get optimum parameters
 fit_arima <- auto.arima(BVSP.returns)
 fit_arima
 ```
 
 
 ```{r}
+# Fit the models
 fit <- BVSP.train %>%
   model(
     naive = NAIVE(Return),
@@ -143,8 +141,10 @@ fit <- BVSP.train %>%
     prophet = fable.prophet::prophet(Return)
   )
 
+# Forecasting for test dataset
 fc <- fit %>% forecast(new_data = BVSP.test)
 
+# Plot the forecast data
 fc %>% autoplot(BVSP.train %>% filter(t.day >= 1000), level = NULL)
 ```
 
@@ -157,6 +157,7 @@ fc %>% accuracy(BVSP.test)
 
 
 ```{r}
+# Train and test format for Garch models
 train <- as.xts(BVSP.train)
 test <- as.xts(BVSP.test)
 ```
@@ -170,29 +171,33 @@ PerformanceAnalytics::legend('topright', legend = c('return', 'kernel', 'normal 
 ```
 
 ```{r}
+# Using Garch model for volatility forecasting
+
+# Specification for garch model
 garch_spec <- ugarchspec(mean.model=list(armaOrder=c(0,0)),
                  variance.model=list(model="sGARCH", garchOrder=c(1,1)),
                  distribution.model="std")
+
+# Fit garch model to train data
 fit_garch <- ugarchfit(data = train$Return, spec = garch_spec)
 fit_garch
 ```
 ```{r}
+# Specification for forecasting
 sfinal <- garch_spec
 setfixed(sfinal) <- as.list(coef(fit_garch))
 
+# Forecast 
 fc_garch <- ugarchforecast(data = train$Return, fitORspec = sfinal, n.ahead = 41)
+
+# Forecasted conditional sigma
 plot(sigma(fc_garch))
 ```
 
-```{r}
-plot(fit_garch, which = "all")
-```
+
 
 ```{r}
-plot(fit_garch@fit$sigma)
-```
-
-```{r}
+# Simulate the forecasting returns
 sim <- ugarchpath(spec = sfinal,
                   m.sim = 1,
                   n.sim = 1*41,
@@ -205,13 +210,12 @@ sim <- fitted(sim)
 
 ```{r}
 # Concatenate the fitted model with the prediction, transform to time series
-#dat <- as.ts(c(fit_garch@fit$sigma, pred = fc_garch@forecast$sigmaFor))
 dat <- as.ts(c(fit_garch@fit$sigma, pred = fc_garch@forecast$sigmaFor))
 
 # Create the plot
 plot(window(dat, start = start(dat), end = 1435), col = "blue",
      xlim = range(time(dat)), ylim = range(dat),
-     ylab = "Conditional SD", main = "Prediction based on GARCH model")
+     ylab = "Conditional SD", main = "Conditional SD Prediction based on GARCH model")
 
 par(new=TRUE)
 
@@ -219,9 +223,10 @@ plot(window(dat, start = 1435), col = "red", axes = F, xlab = "", ylab = "", xli
 ```
 
 ```{r}
+# Combine test and simulated forecast result
 sim <- as.ts(sim)
 test$sim <- as.numeric(sim[,1])
-test
+head(test)
 ```
 
 ```{r}
@@ -231,26 +236,21 @@ dat <- as.ts(c(train$Return, test$sim))
 # Create the plot
 plot(window(dat, start = start(dat), end = 1435), col = "blue",
      xlim = range(time(dat)), ylim = range(dat),
-     ylab = "Conditional SD", main = "Prediction based on GARCH model")
+     ylab = "Conditional SD", main = "Prediction returns based on GARCH model")
 
 par(new=TRUE)
 
 plot(window(dat, start = 1435), col = "red", axes = F, xlab = "", ylab = "", xlim = range(time(dat)), ylim = range(dat))
 ```
-```{r}
-# Create date variable
-zoo::fortify.zoo(test) %>%
-  as_tsibble(index = t.day) -> test
 
-
-# Plot train and test data
-BVSP.train %>% filter(t.day >= 1400) %>% 
-  autoplot(Return) +
-  autolayer(test %>% filter(t.day>=1435), sim, colour = "red") +
-  labs(title = "Train and Test Data")
-```
 ```{r}
-sqrt(sum((test$Return-test$sim)^2)/(length(test$Return)))
+# Garch RMSE for test accuracy
+rmse <- sqrt(sum((test$Return-test$sim)^2)/(length(test$Return)))
+rmse
+
+# Garch MAE for test accuracy
+mae <- mean(abs(test$Return-test$sim))
+mae
 ```
 
 
