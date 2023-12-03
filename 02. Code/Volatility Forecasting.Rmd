@@ -1,0 +1,189 @@
+---
+title: "DASC-6510---Final-Project"
+author: "Khanh Tran"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+``` {r libraries, echo = FALSE, message=FALSE, warning = FALSE}
+# Load Libraries
+pkg_list <- c("fpp3","fabletools", "forecast", "fpp3", "ggplot2", "quantmod", "tseries", "zoo", "xts", "tseries", "PerformanceAnalytics", "rugarch") 
+
+# Install packages if needed
+for (pkg in pkg_list)
+{
+  # Try loading the library.
+  if ( ! library(pkg, logical.return=TRUE, character.only=TRUE, quietly=TRUE) )
+  {
+    # If the library cannot be loaded, install it; then load.
+    install.packages(pkg)
+    library(pkg, character.only=TRUE)
+  }
+}
+
+# Function conflict handling
+library(conflicted)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::"%>%")
+conflicts_prefer(zoo::index)
+
+# Get the path of the current script file
+script_path <- rstudioapi::getSourceEditorContext()$path
+
+# Extract the directory path from the script path
+dir_path <- dirname(script_path)
+
+# set the current working directory as the working directory
+setwd(dir_path)
+```
+
+
+``` {r, warning = FALSE, message = FALSE}
+# Download the data from Yahoo Finance.
+start.date <- '2016-12-31'
+end.date <- '2022-12-31'
+
+# Symbols you want to download
+symbol <- c("^BVSP")
+
+# Download the selected stocks
+getSymbols(symbol, src = "yahoo", from = start.date, to = end.date)
+
+# Extract only the adjusted price for the requested range
+Price.BVSP <- na.omit(BVSP[, "BVSP.Adjusted"])
+
+# Calculate log returns of price
+Price.BVSP$BVSP.returns <- dailyReturn(BVSP, subset=NULL, type='arithmetic',
+           leading=TRUE)
+
+# Create date variable
+zoo::fortify.zoo(Price.BVSP) %>%
+  mutate(t.day = row_number()) %>%
+  as_tsibble(index = t.day) -> Price.BVSP
+
+# Split the data into train and test
+Price.BVSP %>%
+  filter(Index <= as.Date('2022-10-31')) -> BVSP.train
+
+Price.BVSP %>%
+  filter(Index > as.Date('2022-10-31')) -> BVSP.test
+
+# Plot of daily price
+plot(BVSP.train$Index, BVSP.train$BVSP.Adjusted, xlab="Date", ylab="Adjusted Closing Prices", main="BVSP", col="blue", type='l') 
+lines(BVSP.test$Index, BVSP.test$BVSP.Adjusted, col="red", type='l')
+```
+
+
+
+``` {r, message = FALSE, warning = FALSE}
+# Functions
+## Sign Correlation Function 
+rho.cal<-function(X){
+  rho.hat<-cor(sign(X-mean(X)), X-mean(X))
+  return(rho.hat)
+}
+
+## Degrees of freedom calculation
+df=0
+fun <- function(x, rhoValue){
+  return(rhoValue*(x-1)*beta(x/2,1/2)-2*sqrt(x-2))
+}
+```
+
+``` {r, message = FALSE, warning = FALSE}
+# Calculate sign correlation
+rho_cal <- rho.cal(na.omit(Price.BVSP$BVSP.returns))
+
+# Calculate degress of freedom
+dof <- uniroot(fun, c(3, 8), rho_cal)$root
+
+# Print results
+cat("Symbol:", symbol, "\nDegrees of Freedom:", dof, "\nSign Correlation:", rho_cal, "\n\n")
+```
+
+
+## Volatility Forecasting
+
+```{r}
+# Plot train and test data
+BVSP.train %>% 
+  autoplot(BVSP.returns) +
+  autolayer(BVSP.test, BVSP.returns, colour = "red") +
+  labs(title = "Train and Test Data")
+```
+
+```{r}
+# Plot ACF and PACF of BVSP returns
+BVSP.returns <- BVSP.train$BVSP.returns
+par(mfrow = c(1,2))
+acf(BVSP.returns)
+pacf(BVSP.returns)
+```
+```{r}
+fit_arima <- auto.arima(BVSP.returns)
+fit_arima
+```
+
+
+```{r}
+BVSP.train %>%
+  model(
+    naive = NAIVE(BVSP.returns),
+    mean = MEAN(BVSP.returns),
+    drift = RW(BVSP.returns ~ drift()),
+    ets = ETS(BVSP.returns),
+    arima = ARIMA(BVSP.returns ~ 1 + pdq(4, 0, 4)),
+    nnetar = NNETAR(BVSP.returns),
+    prophet = fable.prophet::prophet(BVSP.returns)
+  ) %>% 
+  forecast(new_data = BVSP.test) %>% 
+  autoplot(BVSP.train %>% filter(t.day >= 1000), level = NULL)
+```
+
+
+
+
+```{r}
+# Return data
+return = CalculateReturns(BVSP[, "BVSP.Adjusted"])
+return <- return[-1]
+return<- na.omit(return)
+
+# Train and Test data
+return %>%
+       subset(year(index(.))<= 2022-10-31) -> train
+
+tail(train)
+train
+
+
+return[lubridate::date(index(return)) <= '2022-10-31'] -> test
+return[lubridate::date(index(return)) > '2022-10-31'] -> train
+tail(train)
+```
+
+
+```{r}
+# Plot histogram of return
+# chartSeries(return)
+chart.Histogram(return, methods = c("add.density","add.normal"), colorset = c('blue', 'red','black'))
+PerformanceAnalytics::legend('topright', legend = c('return', 'kernel', 'normal dist'), fill = c('blue', 'red','black'))
+```
+
+```{r}
+garch_spec <- ugarchspec(mean.model=list(armaOrder=c(0,0)),
+                 variance.model=list(model="sGARCH", garchOrder=c(1,1)),
+                 distribution.model="norm")
+fit_garch <- ugarchfit(data = train, spec = garch_spec)
+fit_garch
+```
+```{r}
+fc_garch <- ugarchforecast(data = train, fitORspec = fit_garch, n.ahead = 22)
+plot(sigma(fc_garch))
+```
+
