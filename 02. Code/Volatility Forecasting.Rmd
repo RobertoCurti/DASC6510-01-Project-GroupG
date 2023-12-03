@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ``` {r libraries, echo = FALSE, message=FALSE, warning = FALSE}
 # Load Libraries
-pkg_list <- c("fpp3","fabletools", "forecast", "fpp3", "ggplot2", "quantmod", "tseries", "zoo", "xts", "tseries", "PerformanceAnalytics", "rugarch") 
+pkg_list <- c("fpp3","fabletools", "forecast", "ggplot2", "quantmod", "tseries", "zoo", "xts", "tseries", "PerformanceAnalytics", "rugarch") 
 
 # Install packages if needed
 for (pkg in pkg_list)
@@ -45,7 +45,7 @@ setwd(dir_path)
 
 ``` {r, warning = FALSE, message = FALSE}
 # Download the data from Yahoo Finance.
-start.date <- '2016-12-31'
+start.date <- '2017-01-01'
 end.date <- '2022-12-31'
 
 # Symbols you want to download
@@ -55,27 +55,28 @@ symbol <- c("^BVSP")
 getSymbols(symbol, src = "yahoo", from = start.date, to = end.date)
 
 # Extract only the adjusted price for the requested range
-Price.BVSP <- na.omit(BVSP[, "BVSP.Adjusted"])
+BVSP <- na.omit(BVSP[, "BVSP.Adjusted"])
+names(BVSP) <- "Price"
 
 # Calculate log returns of price
-Price.BVSP$BVSP.returns <- dailyReturn(BVSP, subset=NULL, type='arithmetic',
-           leading=TRUE)
+BVSP$Return <- CalculateReturns(BVSP[, "Price"])
+BVSP <- na.omit(BVSP)
 
 # Create date variable
-zoo::fortify.zoo(Price.BVSP) %>%
+zoo::fortify.zoo(BVSP) %>%
   mutate(t.day = row_number()) %>%
-  as_tsibble(index = t.day) -> Price.BVSP
+  as_tsibble(index = t.day) -> BVSP
 
 # Split the data into train and test
-Price.BVSP %>%
+BVSP %>%
   filter(Index <= as.Date('2022-10-31')) -> BVSP.train
 
-Price.BVSP %>%
+BVSP %>%
   filter(Index > as.Date('2022-10-31')) -> BVSP.test
 
 # Plot of daily price
-plot(BVSP.train$Index, BVSP.train$BVSP.Adjusted, xlab="Date", ylab="Adjusted Closing Prices", main="BVSP", col="blue", type='l') 
-lines(BVSP.test$Index, BVSP.test$BVSP.Adjusted, col="red", type='l')
+plot(BVSP.train$Index, BVSP.train$Price, xlab="Date", ylab="Adjusted Closing Prices", main="BVSP", col="blue", type='l') 
+lines(BVSP.test$Index, BVSP.test$Price, col="red", type='l')
 ```
 
 
@@ -97,7 +98,7 @@ fun <- function(x, rhoValue){
 
 ``` {r, message = FALSE, warning = FALSE}
 # Calculate sign correlation
-rho_cal <- rho.cal(na.omit(Price.BVSP$BVSP.returns))
+rho_cal <- rho.cal(na.omit(BVSP$Return))
 
 # Calculate degress of freedom
 dof <- uniroot(fun, c(3, 8), rho_cal)$root
@@ -112,14 +113,14 @@ cat("Symbol:", symbol, "\nDegrees of Freedom:", dof, "\nSign Correlation:", rho_
 ```{r}
 # Plot train and test data
 BVSP.train %>% 
-  autoplot(BVSP.returns) +
-  autolayer(BVSP.test, BVSP.returns, colour = "red") +
+  autoplot(Return) +
+  autolayer(BVSP.test, Return, colour = "red") +
   labs(title = "Train and Test Data")
 ```
 
 ```{r}
 # Plot ACF and PACF of BVSP returns
-BVSP.returns <- BVSP.train$BVSP.returns
+BVSP.returns <- BVSP.train$Return
 par(mfrow = c(1,2))
 acf(BVSP.returns)
 pacf(BVSP.returns)
@@ -131,59 +132,125 @@ fit_arima
 
 
 ```{r}
-BVSP.train %>%
+fit <- BVSP.train %>%
   model(
-    naive = NAIVE(BVSP.returns),
-    mean = MEAN(BVSP.returns),
-    drift = RW(BVSP.returns ~ drift()),
-    ets = ETS(BVSP.returns),
-    arima = ARIMA(BVSP.returns ~ 1 + pdq(4, 0, 4)),
-    nnetar = NNETAR(BVSP.returns),
-    prophet = fable.prophet::prophet(BVSP.returns)
-  ) %>% 
-  forecast(new_data = BVSP.test) %>% 
-  autoplot(BVSP.train %>% filter(t.day >= 1000), level = NULL)
+    naive = NAIVE(Return),
+    mean = MEAN(Return),
+    drift = RW(Return ~ drift()),
+    ets = ETS(Return),
+    arima = ARIMA(Return ~ 1 + pdq(1, 0, 0)),
+    nnetar = NNETAR(Return),
+    prophet = fable.prophet::prophet(Return)
+  )
+
+fc <- fit %>% forecast(new_data = BVSP.test)
+
+fc %>% autoplot(BVSP.train %>% filter(t.day >= 1000), level = NULL)
+```
+
+```{r}
+# Models accuracy
+fc %>% accuracy(BVSP.test)
 ```
 
 
 
 
 ```{r}
-# Return data
-return = CalculateReturns(BVSP[, "BVSP.Adjusted"])
-return <- return[-1]
-return<- na.omit(return)
-
-# Train and Test data
-return %>%
-       subset(year(index(.))<= 2022-10-31) -> train
-
-tail(train)
-train
-
-
-return[lubridate::date(index(return)) <= '2022-10-31'] -> test
-return[lubridate::date(index(return)) > '2022-10-31'] -> train
-tail(train)
+train <- as.xts(BVSP.train)
+test <- as.xts(BVSP.test)
 ```
 
 
 ```{r}
 # Plot histogram of return
 # chartSeries(return)
-chart.Histogram(return, methods = c("add.density","add.normal"), colorset = c('blue', 'red','black'))
+chart.Histogram(train$Return, methods = c("add.density","add.normal"), colorset = c('blue', 'red','black'))
 PerformanceAnalytics::legend('topright', legend = c('return', 'kernel', 'normal dist'), fill = c('blue', 'red','black'))
 ```
 
 ```{r}
 garch_spec <- ugarchspec(mean.model=list(armaOrder=c(0,0)),
                  variance.model=list(model="sGARCH", garchOrder=c(1,1)),
-                 distribution.model="norm")
-fit_garch <- ugarchfit(data = train, spec = garch_spec)
+                 distribution.model="std")
+fit_garch <- ugarchfit(data = train$Return, spec = garch_spec)
 fit_garch
 ```
 ```{r}
-fc_garch <- ugarchforecast(data = train, fitORspec = fit_garch, n.ahead = 22)
+sfinal <- garch_spec
+setfixed(sfinal) <- as.list(coef(fit_garch))
+
+fc_garch <- ugarchforecast(data = train$Return, fitORspec = sfinal, n.ahead = 41)
 plot(sigma(fc_garch))
 ```
+
+```{r}
+plot(fit_garch, which = "all")
+```
+
+```{r}
+plot(fit_garch@fit$sigma)
+```
+
+```{r}
+sim <- ugarchpath(spec = sfinal,
+                  m.sim = 1,
+                  n.sim = 1*41,
+                  rseed = 10)
+
+plot.zoo(fitted(sim))
+sim <- fitted(sim)
+```
+
+
+```{r}
+# Concatenate the fitted model with the prediction, transform to time series
+#dat <- as.ts(c(fit_garch@fit$sigma, pred = fc_garch@forecast$sigmaFor))
+dat <- as.ts(c(fit_garch@fit$sigma, pred = fc_garch@forecast$sigmaFor))
+
+# Create the plot
+plot(window(dat, start = start(dat), end = 1435), col = "blue",
+     xlim = range(time(dat)), ylim = range(dat),
+     ylab = "Conditional SD", main = "Prediction based on GARCH model")
+
+par(new=TRUE)
+
+plot(window(dat, start = 1435), col = "red", axes = F, xlab = "", ylab = "", xlim = range(time(dat)), ylim = range(dat))
+```
+
+```{r}
+sim <- as.ts(sim)
+test$sim <- as.numeric(sim[,1])
+test
+```
+
+```{r}
+dat <- as.ts(c(train$Return, test$sim))
+
+
+# Create the plot
+plot(window(dat, start = start(dat), end = 1435), col = "blue",
+     xlim = range(time(dat)), ylim = range(dat),
+     ylab = "Conditional SD", main = "Prediction based on GARCH model")
+
+par(new=TRUE)
+
+plot(window(dat, start = 1435), col = "red", axes = F, xlab = "", ylab = "", xlim = range(time(dat)), ylim = range(dat))
+```
+```{r}
+# Create date variable
+zoo::fortify.zoo(test) %>%
+  as_tsibble(index = t.day) -> test
+
+
+# Plot train and test data
+BVSP.train %>% filter(t.day >= 1400) %>% 
+  autoplot(Return) +
+  autolayer(test %>% filter(t.day>=1435), sim, colour = "red") +
+  labs(title = "Train and Test Data")
+```
+```{r}
+sqrt(sum((test$Return-test$sim)^2)/(length(test$Return)))
+```
+
 
