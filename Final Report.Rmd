@@ -1,0 +1,39 @@
+---
+title: "Brazilian Stock Index Forecasting"
+author: "Khanh Tran – T00711160 and Roberto Sanches – T00706230\\ Department of Mathematics and Statistics and Department of Computing Science\\ Thompson Rivers University\\ Kamloops, Canada\\ \texttt{trank22@mytru.ca} \\ \texttt{robertocurti@gmail.com}"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\begin{document}
+
+\section{Introduction}
+
+
+
+\section{Background}
+
+
+
+\section{Data}
+
+
+
+\section{Method}
+
+
+
+\section{Results}
+
+
+
+\section{Discussion \& Conclusions}
+
+
+
+\end{document}
+
